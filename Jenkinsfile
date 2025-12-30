@@ -1,72 +1,81 @@
 pipeline {
     agent any
-    
-    stages{
-        stage('SCA with OWASP Dependency Check') {
-        steps {
-            dependencyCheck additionalArguments: '''--format HTML
-            ''', odcInstallation: 'DP-Check'
-            }
+
+    environment {
+        DOCKERHUB_USER = 'dounia03'
     }
+
+    stages {
+        stage('SCA with OWASP Dependency Check') {
+            steps {
+                dependencyCheck additionalArguments: '''--format HTML''', odcInstallation: 'DP-Check'
+            }
+        }
 
         stage('SonarQube Analysis') {
-      steps {
-        script {
-          // requires SonarQube Scanner 2.8+
-          scannerHome = tool 'SonarScanner'
-        }
-        withSonarQubeEnv('Sonarqube Server') {
-          sh "${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=newsread-microservice-application"
-        }
-      }
-    }
-
-        stage('Build Docker Images') {
             steps {
-                script{
-                    sh 'docker build -t dounia03/newsread-customize customize-service/'
-                    sh 'docker build -t dounia03/newsread-news news-service/'
-            }
-        }
-    }
-        stage('Containerize And Test') {
-            steps {
-                script{
-                    sh 'docker run -d  --name customize-service -e FLASK_APP=run.py dounia03/newsread-customize && sleep 10 && docker logs customize-service && docker stop customize-service'
-                    sh 'docker run -d  --name news-service -e FLASK_APP=run.py dounia03/newsread-news && sleep 10 && docker logs news-service && docker stop news-service'
+                script {
+                    scannerHome = tool 'SonarScanner'
+                }
+                withSonarQubeEnv('Sonarqube Server') {
+                    sh """
+                        ${scannerHome}/bin/sonar-scanner \
+                        -Dsonar.projectKey=newsread-microservice-application \
+                        -Dsonar.sources=. \
+                        -Dsonar.host.url=${env.SONAR_HOST_URL} \
+                        -Dsonar.login=${env.SONAR_AUTH_TOKEN}
+                    """
                 }
             }
         }
-        stage('Push Images To Dockerhub') {
+
+        stage('Build Docker Images') {
             steps {
-                    script{
-                        withCredentials([string(credentialsId: 'DockerHubPass', variable: 'DockerHubPass')]) {
-                        sh 'docker login -u dounia03 --password ${DockerHubPass}' }
-                        sh 'docker push dounia03/newsread-news && docker push dounia03/newsread-customize'
-               }
+                script {
+                    sh 'docker build -t ${DOCKERHUB_USER}/newsread-customize customize-service/'
+                    sh 'docker build -t ${DOCKERHUB_USER}/newsread-news news-service/'
+                }
             }
-                 
+        }
+
+        stage('Containerize And Test') {
+            steps {
+                script {
+                    sh 'docker run -d --name customize-service -e FLASK_APP=run.py ${DOCKERHUB_USER}/newsread-customize && sleep 10 && docker logs customize-service && docker stop customize-service'
+                    sh 'docker run -d --name news-service -e FLASK_APP=run.py ${DOCKERHUB_USER}/newsread-news && sleep 10 && docker logs news-service && docker stop news-service'
+                }
             }
+        }
 
-        //stage('Trivy scan on Docker images'){
-          //  steps{
-            //     sh 'TMPDIR=/home/jenkins'
-              //   sh 'trivy image dounia03/newsread-news:latest'
-                // sh 'trivy image dounia03/newsread-customize:latest'
-        //}
-       
-   // }
-        }    
+        stage('Push Images To DockerHub') {
+            steps {
+                script {
+                    withCredentials([string(credentialsId: 'DockerHubPass', variable: 'DOCKERHUB_PASS')]) {
+                        sh 'docker login -u ${DOCKERHUB_USER} --password ${DOCKERHUB_PASS}'
+                    }
+                    sh 'docker push ${DOCKERHUB_USER}/newsread-news'
+                    sh 'docker push ${DOCKERHUB_USER}/newsread-customize'
+                }
+            }
+        }
 
-        post {
+        // Optionnel : analyse vulnérabilités avec Trivy
+        // stage('Trivy scan on Docker images') {
+        //     steps {
+        //         sh 'TMPDIR=/home/jenkins trivy image ${DOCKERHUB_USER}/newsread-news:latest'
+        //         sh 'TMPDIR=/home/jenkins trivy image ${DOCKERHUB_USER}/newsread-customize:latest'
+        //     }
+        // }
+    }
+
+    post {
         always {
-            // Always executed
-                sh 'docker rm news-service'
-                sh 'docker rm customize-service'
+            sh 'docker rm -f news-service || true'
+            sh 'docker rm -f customize-service || true'
         }
         success {
-            // on sucessful execution
-            sh 'docker logout'   
+            sh 'docker logout'
         }
     }
 }
+
